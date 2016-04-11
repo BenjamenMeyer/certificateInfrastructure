@@ -1,0 +1,308 @@
+#!/bin/bash
+
+CA_NAME="centcom"
+CA_USER="centcom-ca"
+CA_HOME="/home/${CA_USER}"
+CA_BASE="${CA_HOME}/protected"
+
+CA_ROOT="${CA_BASE}/root"
+CA_ROOT_NAME="CA Root"
+CA_ROOT_BASE_NAME="${CA_NAME}.ca"
+CA_ROOT_CONF="${CA_ROOT}/${CA_ROOT_BASE_NAME}.conf"
+CA_ROOT_KEY="${CA_ROOT}/${CA_ROOT_BASE_NAME}.key"
+CA_ROOT_CERT="${CA_ROOT}/${CA_ROOT_BASE_NAME}.crt"
+CA_ROOT_INDEX="${CA_ROOT}/${CA_ROOT_BASE_NAME}.index"
+CA_ROOT_SERIAL="${CA_ROOT}/${CA_ROOT_BASE_NAME}.serial"
+CA_ROOT_CRLNUMBER="${CA_ROOT}/${CA_ROOT_BASE_NAME}.crlnumber"
+CA_ROOT_CRL_PEM="${CA_ROOT}/${CA_ROOT_BASE_NAME}.crl.pem"
+CA_ROOT_CRL_DER="${CA_ROOT}/${CA_ROOT_BASE_NAME}.crl"
+
+BITS=16384
+DAYS_VALID=1000
+SPACER_1=""
+SPACER_2="	"
+SPACER="${SPACER_1}${SPACER_2}"
+
+CA_INTERMEDIATE_BASE="${CA_BASE}/intermediate"
+CA_INTERMEDIATE_NAME="Intermediate CA"
+CA_INTERMEDIATE_BASE_NAME="${CA_NAME}.ca.intermediate"
+CA_INTERMEDIATE_CONF="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.conf"
+CA_INTERMEDIATE_KEY="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.key"
+CA_INTERMEDIATE_CERT_REQ="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.csr"
+CA_INTERMEDIATE_CERT="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.crt"
+CA_INTERMEDIATE_CERT_CHAIN="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.full-chain.crt"
+CA_INTERMEDIATE_INDEX="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.index"
+CA_INTERMEDIATE_SERIAL="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.serial"
+CA_INTERMEDIATE_CRLNUMBER="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.crlnumber"
+CA_INTERMEDIATE_CRL_PEM="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.crl.pem"
+CA_INTERMEDIATE_CRL_DER="${CA_INTERMEDIATE_BASE}/${CA_INTERMEDIATE_BASE_NAME}.crl.der"
+
+ERROR_SUCCESS=0
+ERROR_NO_FILE=1
+ERROR_FAILED_TO_CREATE=2
+ERROR_FAILED_CA_SIGN=3
+ERROR_MISSING_DEVICE_NAME=4
+ERROR_MAKING_CHAIN=5
+
+function setPermissions()
+{
+	local fileToModify="${1}"
+
+	if [ -f ${fileToModify} ]; then
+		echo "${SPACER}Setting permissions on ${fileToModify}"
+		chmod 0400 ${fileToModify}
+		return $?
+	else
+		echo "${SPACER}${fileToModify} does not exist. Unable to set permissions."
+		return ${ERROR_NO_FILE}
+	fi
+}
+
+function generatePrivateKey()
+{
+	local outputFile="${1}"
+	local name="${2}"
+
+	echo "Checking for ${name}'s Private Key (${outputFile})..."
+	if [ ! -f ${outputFile} ]; then
+		echo "${SPACER}Creating ${name}..."
+		openssl genrsa -aes256 -out ${outputFile} ${BITS}
+		if [ -f "${outputFile}" ]; then
+			setPermissions "${outputFile}"
+			return $?
+		else
+			echo "${SPACER}Failed to create ${name}"
+			return ${ERROR_FAILED_TO_CREATE}
+		fi
+	else
+		echo "${SPACER}Found ${outputFile}"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function initializeAuthorityIndex()
+{
+	local indexFile="${1}"
+	local name="${2}"
+
+	echo "Checking for ${name}'s Index Database ${indexFile}..."
+	if [ ! -f ${indexFile} ]; then
+		touch ${indexFile}
+		return $?
+	else
+		echo "${SPACER}Found ${indexFile}"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function initializeAuthoritySerial()
+{
+	local serialFile="${1}"
+	local name="${2}"
+	local baseNumber="${3}"
+
+	echo "Checking for ${name}'s Serial File ${serialFile}..."
+	if [ ! -f ${serialFile} ]; then
+		echo ${baseNumber} > ${serialFile}
+		return $?
+	else
+		echo "${SPACER}Found ${serialFile}"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function initializeAuthorityCrlNumber()
+{
+	local crlNumber="${1}"
+	local name="${2}"
+	local baseNumber="${3}"
+
+	echo "Checking for ${name}'s CRL Number File ${crlNumber}..."
+	if [ ! -f ${crlNumber} ]; then
+		echo ${baseNumber} > ${crlNumber}
+		return $?
+	else
+		echo "${SPACER}Found ${crlNumber}"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function generateAuthorityCertificate()
+{
+	local keyFile="${1}"
+	local outputFile="${2}"
+	local name="${3}"
+
+	echo "Checking for ${name} (${outputFile})..."
+	if [ ! -f ${outputFile} ]; then
+		echo "${SPACER}Creating ${name}"
+		openssl req -x509 -new -nodes -sha256 -key ${keyFile} -days 3650 -out ${outputFile} 
+		if [ -f "${outputFile}" ]; then
+			setPermissions "${outputFile}"
+			return $?
+		else
+			echo "${SPACER}Failed to generate ${outputFile}"
+			return ${FAILED_TO_CREATE}
+		fi
+	else
+		echo "${SPACER}Found ${outputFile}"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function signAuthorityCertificate()
+{
+	local authorityCertificate="${1}"
+	local authorityConfiguration="${2}"
+	local authorityName="${3}"
+	local subAuthorityRequest="${4}"
+	local subAuthorityCertificate="${5}"
+	local subAuthorityName="${6}"
+
+	echo "Signing ${subAuthorityName} by ${authorityName}..."
+	openssl ca -batch -config ${authorityConfiguration} -notext -in ${subAuthorityRequest} -out ${subAuthorityCertificate}
+	if [ -f ${subAuthorityCertificate} ]; then
+		echo "${SPACER}${subAuthorityCertificate} successfully signed by ${authorityName}"
+		return ${ERRROR_SUCCESS}
+	else
+		echo "${SPACER}Failed to sign ${subAuthorityCertificate} using the CA ${authorityName}"
+		return ${ERROR_FAILED_CA_SIGN}
+	fi
+}
+
+function generateCertificateCrl()
+{
+	local authorityKey="${1}"
+	local authorityCert="${2}"
+	local authorityCrlPem="${3}"
+	local authorityCrlDer="${4}"
+	local authorityConfiguration="${5}"
+	local authorityName="${6}"
+
+	echo "Creating PEM CRL for ${authorityName}..."
+	openssl ca -config ${authorityConfiguration}  -gencrl -keyfile ${authoritykey} -cert ${authorityCert} -out ${authorityCrlPem}
+	if [ -f ${authorityCrlPem} ]; then
+		echo "${SPACER}Created PEM CRL in ${authorityCrlPem}"
+
+		echo "Creating DER CRL from PEM CRL (${authorityCrlPem})..."
+		openssl crl -inform PEM -in ${authorityCrlPem} -outform DER -out ${authorityCrlDer}
+		if [ -f ${authorityCrlDer} ]; then
+			echo "${SPACER}Created DER CRL (${authorityCrlDer})"
+			return ${ERROR_SUCCESS}
+		else
+			echo "${SPACER}Failed to create DER CRL"
+			return ${ERROR_FAILED_TO_CREATE}
+		fi
+	else
+		echo "${SPACER}Failed to Create PEM CRL"
+		return ${ERROR_FAILED_TO_CREATE}
+	fi
+}
+
+function revokeCertificate()
+{
+	local authorityKey="${1}"
+	local authorityCert="${2}"
+	local authorityConfiguration="${3}"
+	local authorityName="${4}"
+	local certificateToRevoke="${5}"
+
+	echo "${authorityName} is revoking certificate ${certificateToRevoke}"
+	openssl ca -config ${authorityConfiguration} -revoke ${certificateToRevoke} -keyfile ${authorityKey} -cert ${authorityCert}
+	return $?
+}
+
+function generateCertificateRequest()
+{
+	local keyFile="${1}"
+	local requestFile="${2}"
+	local name="${3}"
+
+	echo
+	echo "${SPACER}**************************************************************************************************"
+	echo "${SPACER}WARNING: Make sure to fill out the Common Name propertly for ${name}"
+	echo "${SPACER}**************************************************************************************************"
+	echo
+	echo "Creating Certificate Request..."
+	openssl req -new -key ${keyFile} -sha256 -out ${requestFile}
+	if [ -f ${requestFile} ]; then
+		setPermissions "${outputFile}"
+		return $?
+	else
+		echo "${SPACER}Failed to create ${outputFile}"
+		return ${ERROR_FAILED_TO_CREATE}
+	fi
+}
+
+function makeList()
+{
+	for entry in "${@}"
+	do
+		if [ "${entry}" != "${0}" ]; then
+			echo "${entry}"
+		fi
+	done
+}
+
+function generateCertificateChain()
+{
+	local keyChain="${1}"
+	local chainFile="${2}"
+
+	echo "Checking if Chain File (${chainFile}) already exists..."
+	if [ ! -f ${chainFile} ]; then
+		echo "${SPACER}Creating Chain File..."
+		echo "" > ${chainFile}
+		for KEY_FILE in ${keyChain}
+		do
+			echo "${SPACER}${SPACER_2}Adding Key ${KEY_FILE} to ${chainFile}"
+			cat ${KEY_FIL} >> ${chainFile}
+			if [ $? -ne 0 ]; then
+				echo "Error adding ${KEY_FILE} to ${chainFile}"
+				return ${ERROR_MAKING_CHAIN}
+			fi
+		done
+
+		echo "Completed building Chain File (${chainFile})"
+		return ${ERROR_SUCCESS}
+	else
+		echo "Chain File (${chainFile}) already exists"
+		return ${ERROR_SUCCESS}
+	fi
+}
+
+function verifyCertificateChain()
+{
+	local certificateChain="${1}"
+	local certificate="${2}"
+
+	openssl verify  -CAfile ${certificateChain} ${certificate} | grep "${certificate}: OK"
+	return $?
+}
+
+function verifyCertificateCrlChain()
+{
+	local caCertificateChain="${1}"
+	local caCrlPem="${2}"
+	local certificate="${3}"
+
+	local crlCertChain=`mktemp`
+
+	cat ${caCertificateChain} ${caCrlPem} > ${crlCertChain}
+
+	openssl verify -crl_check -CAfile ${crlCertChain} ${certificate} | grep "${certificate}: OK"
+	local result=$?
+
+	rm ${crlCertChain}
+
+	return ${result}
+}
+
+function verifyCertificate()
+{
+	local certToValidate="${1}"
+
+	echo "${SPACER_1}Verifying ${certToValidate}..."
+	openssl x509 -in ${certToValidate} -noout -text | grep Signature
+	return $?
+}
